@@ -21,12 +21,6 @@ test_data = data[10001:end, :]
 
 N = size(train_data,2)
 
-train_data = [train_data[i,:] for i = 1:size(train_data, 1)]
-test_data = [test_data[i,:] for i = 1:size(test_data, 1)]
-
-train_data = map(ch -> onehotbatch(ch, labels), train_data)
-test_data = map(ch -> onehotbatch(ch, labels), test_data)
-
 m = Chain(
     GRU(length(labels), 100),
     GRU(100, length(labels)),
@@ -35,32 +29,34 @@ m = Chain(
 m = f64(m)
 opt = ADAM(0.01)
 
-function probability(v)
-    if length(size(v)) == 1
-        Flux.reset!(m)
-        v0 = onehot(0, labels)
-        prob = dot(m(v0), v[1])
+train_data = map(ch -> onehot(ch, labels), train_data) # onehot the training data
+train_data = collect(partition(batchseq(chunk(train_data, batch_size)), N) # divide the training set into batches
 
-        for i in 1:N-1
-            prob *= dot(m(v[i]), v[i+1])
-        end
-        
-    else
-        v0 = onehot(0, labels)
-        prob = zeros(size(v,1))
-        
-        for j in 1:size(v,1)
-            Flux.reset!(m)
-            v0 = onehot(0, labels)
-            prob[j] = dot(m(v0), v[j,:][1])
-            
-            for i in 1:N-1
-                prob[j] *= dot(m(v[j,:][i]), v[j,:][i+1])
-            end
-        end
-    end
+# TODO: shuffle training data every epoch
+
+function probability(v)
+
+    # initialize the calculation with an all-zero configuration
+    init_config = zeros(size(v[1],2))'
+    # onehot init_config
+    init_config = map(ch -> onehot(ch, labels), init_config)
+    init_config = batchseq(chunk(init_config, batch_size))
+
+    # concactenate init_config and v[1:end-1]
+    vp = vcat(init_config, v[1:end-1])
     
-    return prob
+    # apply model to vp
+    probs = m.(vp)
+
+    # multiply conditionals to get probability vector
+    probs = vcat(probs...)
+    vp = vcat(vp...)
+
+    probs = dot.(probs, vp)
+    probs[probs .== 0] .= 1
+    probs = prod(probs, dims=1)
+
+    return probs
 end
 
 function loss(v)
@@ -125,13 +121,8 @@ function fidelity(space, target)
     return dot(target, sqrt.(probability(space)))
 end    
 
-train_data = [view(train_data, k:k+batch_size-1, :) for k in 1:batch_size:size(train_data,1)];
-test_data = [view(test_data, k:k+batch_size-1, :) for k in 1:batch_size:size(test_data,1)];
-
 epochs = 1:100
 num_batches = size(train_data,1) # needs to generalize
-println(num_batches)
-num_samples = 2000
 
 ps = Flux.params(m)
 space = generate_hilbert_space(hot=true) 
